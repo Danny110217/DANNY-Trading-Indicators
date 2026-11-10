@@ -1,0 +1,137 @@
+//@version=6
+indicator("NY Open Sniper PRO – Rango 15m sombreado + Señales + VWAP Bands", overlay=true, max_lines_count=100, max_boxes_count=20, max_labels_count=100)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// INPUTS
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+tz            = input.string("America/New_York", "Time Zone")
+showNYLine    = input.bool(true, "Línea NY Open 9:30")
+showRange     = input.bool(true, "Rango 1ra vela 15m")
+showBox       = input.bool(true, "Sombra dentro del rango")
+extendToClose = input.bool(true, "Extender sombra hasta 16:00 NY")
+
+showSignals   = input.bool(true, "Mostrar señales SNIPER (1 por lado)")
+useEMAFilter  = input.bool(true, "Filtro EMA 21/55")
+useVWAPFilter = input.bool(true, "Filtro VWAP")
+requireNY     = input.bool(true, "Solo señales dentro NY (9:30–16:00)")
+
+vwapMult      = input.float(1.5, "VWAP Band Mult", step=0.1)
+vwapDevLen    = input.int(20, "VWAP Band DesvLen", minval=1)
+
+colNYLine     = input.color(color.white, "Color NY Open")
+colHigh       = input.color(color.red,   "Color High 1ra 15m")
+colLow        = input.color(color.lime,  "Color Low 1ra 15m")
+colBox        = input.color(color.new(color.yellow, 85), "Color sombra rango")
+
+colLong       = input.color(color.lime, "Color señal LONG")
+colShort      = input.color(color.red,  "Color señal SHORT")
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// TIEMPO NY (9:30–16:00)
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+tMin     = hour(time, tz) * 60 + minute(time, tz)
+nyOpen   = (hour(time, tz) == 9 and minute(time, tz) == 30)
+nyActive = (tMin >= 570 and tMin < 960)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// PRIMERA VELA 15m (9:30–9:45) via security("15")
+// Funciona en cualquier timeframe del chart
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+f_ny15() =>
+    bool isFirst = (hour(time, tz) == 9 and minute(time, tz) == 30)
+    float hi = ta.valuewhen(isFirst, high, 0)
+    float lo = ta.valuewhen(isFirst, low,  0)
+    int   t  = ta.valuewhen(isFirst, time,  0)
+    [hi, lo, t]
+
+[hi15, lo15, t15] = request.security(syminfo.tickerid, "15", f_ny15(), barmerge.gaps_off, barmerge.lookahead_off)
+newDay = ta.change(t15) != 0
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// OBJETOS (líneas + box rango)
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+var line nyLine   = na
+var line hiLine   = na
+var line loLine   = na
+var box  rangeBox = na
+
+// Línea vertical NY Open
+if showNYLine and nyOpen
+    line.delete(nyLine)
+    nyLine := line.new(bar_index, 1e10, bar_index, -1e10, xloc=xloc.bar_index, extend=extend.none, color=colNYLine, width=2)
+
+// Crear nuevo rango cuando llega el nuevo día (nuevo t15)
+if showRange and newDay and not na(hi15) and not na(lo15)
+    line.delete(hiLine)
+    line.delete(loLine)
+    box.delete(rangeBox)
+
+    hiLine := line.new(bar_index, hi15, bar_index + 1, hi15, xloc=xloc.bar_index, extend=extend.right, color=colHigh, width=2)
+    loLine := line.new(bar_index, lo15, bar_index + 1, lo15, xloc=xloc.bar_index, extend=extend.right, color=colLow,  width=2)
+
+    if showBox
+        rangeBox := box.new(left=bar_index, right=bar_index + 1, top=hi15, bottom=lo15, bgcolor=colBox, border_color=color.new(color.white, 100))
+
+// Extender la sombra solo dentro de NY session (hasta 16:00)
+if showBox and not na(rangeBox) and (extendToClose ? nyActive : true)
+    box.set_right(rangeBox, bar_index)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// EMA + VWAP + BANDAS
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ema21 = ta.ema(close, 21)
+ema55 = ta.ema(close, 55)
+
+vwap  = ta.vwap(close)
+dev   = ta.stdev(close, vwapDevLen)
+
+vwapUp = vwap + dev * vwapMult
+vwapDn = vwap - dev * vwapMult
+
+plot(ema21, color=color.orange, linewidth=2, title="EMA 21")
+plot(ema55, color=color.blue,   linewidth=2, title="EMA 55")
+plot(vwap,  color=color.white,  linewidth=2, title="VWAP")
+plot(vwapUp, color=color.new(color.white, 60), title="VWAP Band Up")
+plot(vwapDn, color=color.new(color.white, 60), title="VWAP Band Down")
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// SNIPER: condiciones + anti-spam (1 por lado)
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+insideRange = (close <= hi15 and close >= lo15)
+
+// anti-spam: solo 1 señal por lado hasta que se resetea el día
+var bool longTriggered  = false
+var bool shortTriggered = false
+if newDay
+    longTriggered  := false
+    shortTriggered := false
+
+// filtros
+emaLongOk  = (not useEMAFilter)  or (ema21 > ema55)
+emaShortOk = (not useEMAFilter)  or (ema21 < ema55)
+
+vwapLongOk  = (not useVWAPFilter) or (close > vwap)
+vwapShortOk = (not useVWAPFilter) or (close < vwap)
+
+sessionOk = (not requireNY) or nyActive
+
+// señales: la primera vez que cumple TODO y está fuera del rango
+longCond  = (showSignals and sessionOk and not insideRange and not longTriggered  and close > hi15 and emaLongOk  and vwapLongOk)
+shortCond = (showSignals and sessionOk and not insideRange and not shortTriggered and close < lo15 and emaShortOk and vwapShortOk)
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// PLOTS de señales (limpias)
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+plotshape(longCond,  title="SNIPER LONG",  style=shape.triangleup,   location=location.belowbar, size=size.small, color=colLong,  text="LONG")
+plotshape(shortCond, title="SNIPER SHORT", style=shape.triangledown, location=location.abovebar, size=size.small, color=colShort, text="SHORT")
+
+if longCond
+    longTriggered := true
+if shortCond
+    shortTriggered := true
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ALERTS
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+alertcondition(longCond,  title="NY Sniper LONG",  message="NY Sniper LONG: Close > High(9:30-9:45) + EMA/VWAP ok")
+alertcondition(shortCond, title="NY Sniper SHORT", message="NY Sniper SHORT: Close < Low(9:30-9:45) + EMA/VWAP ok")

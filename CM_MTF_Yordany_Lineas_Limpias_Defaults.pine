@@ -1,0 +1,414 @@
+// Ajustes visuales por defecto: todas las medias como lineas de grosor 2, VWAP grosor 3.
+//Created by user ChrisMoody 4-24-2014...Updated 7/28/2014 added Tilson T3
+
+//Modified on 5-5-14 for 4apprentice08 with Optional BarColor based on Price Crossing MA #1, or #2
+
+//Modified on 7-25-2014 to Add in Tilson T3
+
+//Convertido a Pine v6 + agregados de Yordany: nombre, tabla de sesgo, EMA 50, EMA 105
+
+//Unido con "EMA21 + VWAP Signal [MIO BTC Intraday]" — Yordany
+
+//@version=6
+
+indicator(title="CM MTF EMA Aligned [Yordany] - Lineas Limpias", shorttitle="CM_EMA_Y_L", overlay=true, max_bars_back=500)
+
+
+
+// ══════════════════════════════════════════
+
+// INPUTS ORIGINALES CM_Ultimate_MA_MTF_V2 (sin cambios de lógica ni valores por defecto)
+
+// ══════════════════════════════════════════
+
+src = close
+
+useCurrentRes = input.bool(false, title="Use Current Chart Resolution?")
+
+resCustom = input.timeframe(title="Use Different Timeframe? Uncheck Box Above", defval="D")
+
+len = input.int(20, title="Moving Average Length - LookBack Period")
+
+factorT3 = input.float(defval=7, title="Tilson T3 Factor - *.10 - so 7 = .7 etc.", minval=0)
+
+atype = input.int(2, minval=1, maxval=8, title="1=SMA, 2=EMA, 3=WMA, 4=HullMA, 5=VWMA, 6=RMA, 7=TEMA, 8=Tilson T3")
+
+spc = input.bool(true, title="Show Price Crossing 1st Mov Avg - Highlight Bar?")
+
+cc = input.bool(true, title="Change Color Based On Direction?")
+
+smoothe = input.int(2, minval=1, maxval=10, title="Color Smoothing - Setting 1 = No Smoothing")
+
+doma2 = input.bool(true, title="Optional 2nd Moving Average")
+
+spc2 = input.bool(true, title="Show Price Crossing 2nd Mov Avg?")
+
+len2 = input.int(50, title="Moving Average Length - Optional 2nd MA")
+
+sfactorT3 = input.float(defval=7, title="Tilson T3 Factor - *.10 - so 7 = .7 etc.", minval=0)
+
+atype2 = input.int(2, minval=1, maxval=8, title="1=SMA, 2=EMA, 3=WMA, 4=HullMA, 5=VWMA, 6=RMA, 7=TEMA, 8=Tilson T3")
+
+cc2 = input.bool(true, title="Change Color Based On Direction 2nd MA?")
+
+warn = input.bool(false, title="***You Can Turn On The Show Dots Parameter Below Without Plotting 2nd MA to See Crosses***")
+
+warn2 = input.bool(false, title="***If Using Cross Feature W/O Plotting 2ndMA - Make Sure 2ndMA Parameters are Set Correctly***")
+
+sd = input.bool(false, title="Show Dots on Cross of Both MA's")
+
+
+
+// ══════════════════════════════════════════
+
+// AGREGADOS DE YORDANY — EMA 50 / EMA 105 / SESGO
+
+// ══════════════════════════════════════════
+
+ema50_len   = input.int(50,  "EMA 50 (nueva, sesgo)",  group="Yordany - EMA50/105 y Sesgo")
+
+ema105_len  = input.int(105, "EMA 105 (nueva)",        group="Yordany - EMA50/105 y Sesgo")
+
+ema50_col_i  = input.color(color.blue,   "EMA 50 - Color",  group="Yordany - EMA50/105 y Sesgo")
+
+ema105_col_i = input.color(color.orange, "EMA 105 - Color", group="Yordany - EMA50/105 y Sesgo")
+
+show_table   = input.bool(true, "Mostrar Tabla de Sesgo", group="Yordany - EMA50/105 y Sesgo")
+
+panel_pos    = input.string("Arriba Derecha", "Posición del Panel",
+
+     options=["Arriba Derecha", "Arriba Izquierda", "Abajo Derecha", "Abajo Izquierda"],
+
+     group="Yordany - EMA50/105 y Sesgo")
+
+
+
+// ══════════════════════════════════════════
+
+// AGREGADOS DE YORDANY — EMA21 + VWAP Signal (unido)
+
+// ══════════════════════════════════════════
+
+ema21_len = input.int(21, "EMA 21 (Señal EMA+VWAP)", minval=1, group="Yordany - EMA21 + VWAP Signal")
+
+show_vwap_signal = input.bool(true, "Mostrar puntos LONG/SHORT", group="Yordany - Senales EMA")
+use_vwap_signal_filter = input.bool(false, "Exigir VWAP para senales", group="Yordany - Senales EMA", tooltip="Desactivado: las señales dependen solo de las EMA. Activado: ademas exige precio por encima/debajo del VWAP.")
+confirm_close = input.bool(true, "Confirmar senales al cierre de vela", group="Yordany - Senales EMA")
+
+
+
+// ══════════════════════════════════════════
+
+// CALCULOS ORIGINALES CM_Ultimate_MA_MTF_V2 (sin cambios)
+
+// ══════════════════════════════════════════
+
+res = useCurrentRes ? timeframe.period : resCustom
+
+
+
+//hull ma definition
+
+hullma = ta.wma(2 * ta.wma(src, math.max(1, int(math.round(len / 2.0)))) - ta.wma(src, len), math.max(1, int(math.round(math.sqrt(len)))))
+
+//TEMA definition
+
+ema1 = ta.ema(src, len)
+
+ema2 = ta.ema(ema1, len)
+
+ema3 = ta.ema(ema2, len)
+
+tema = 3 * (ema1 - ema2) + ema3
+
+
+
+//Tilson T3
+
+factor = factorT3 * .10
+
+gd(src, len, factor) => ta.ema(src, len) * (1 + factor) - ta.ema(ta.ema(src, len), len) * factor
+
+t3(src, len, factor) => gd(gd(gd(src, len, factor), len, factor), len, factor)
+
+tilT3 = t3(src, len, factor)
+
+
+
+avg = atype == 1 ? ta.sma(src, len) : atype == 2 ? ta.ema(src, len) : atype == 3 ? ta.wma(src, len) : atype == 4 ? hullma : atype == 5 ? ta.vwma(src, len) : atype == 6 ? ta.rma(src, len) : atype == 7 ? tema : tilT3
+
+
+
+//2nd Ma - hull ma definition
+
+hullma2 = ta.wma(2 * ta.wma(src, math.max(1, int(math.round(len2 / 2.0)))) - ta.wma(src, len2), math.max(1, int(math.round(math.sqrt(len2)))))
+
+//2nd MA TEMA definition
+
+sema1 = ta.ema(src, len2)
+
+sema2 = ta.ema(sema1, len2)
+
+sema3 = ta.ema(sema2, len2)
+
+stema = 3 * (sema1 - sema2) + sema3
+
+
+
+//2nd MA Tilson T3
+
+sfactor = sfactorT3 * .10
+
+sgd(src, len2, sfactor) => ta.ema(src, len2) * (1 + sfactor) - ta.ema(ta.ema(src, len2), len2) * sfactor
+
+st3(src, len2, sfactor) => sgd(sgd(gd(src, len2, sfactor), len2, sfactor), len2, sfactor)
+
+stilT3 = st3(src, len2, sfactor)
+
+
+
+avg2 = atype2 == 1 ? ta.sma(src, len2) : atype2 == 2 ? ta.ema(src, len2) : atype2 == 3 ? ta.wma(src, len2) : atype2 == 4 ? hullma2 : atype2 == 5 ? ta.vwma(src, len2) : atype2 == 6 ? ta.rma(src, len2) : atype2 == 7 ? tema : stilT3
+
+
+
+out = avg
+
+out_two = avg2
+
+
+
+out1 = request.security(syminfo.tickerid, res, out)
+
+out2 = request.security(syminfo.tickerid, res, out_two)
+
+
+
+//Formula for Price Crossing Moving Average #1
+
+cr_up = open < out1 and close > out1
+
+cr_Down = open > out1 and close < out1
+
+//Formula for Price Crossing Moving Average #2
+
+cr_up2 = open < out2 and close > out2
+
+cr_Down2 = open > out2 and close < out2
+
+
+
+ma_up = out1 >= out1[smoothe]
+
+ma_down = out1 < out1[smoothe]
+
+
+
+col = cc ? (ma_up ? color.lime : ma_down ? color.red : color.aqua) : color.aqua
+
+col2 = cc2 ? (ma_up ? color.lime : ma_down ? color.red : color.aqua) : color.white
+
+
+
+circleYPosition = out2
+
+cross_out1_out2 = ta.cross(out1, out2)
+
+
+
+plot(out1, title="Multi-Timeframe Moving Avg", style=plot.style_line, linewidth=2, color=col)
+
+plot(doma2 ? out2 : na, title="2nd Multi-TimeFrame Moving Average", style=plot.style_line, linewidth=2, color=col2)
+
+plot(sd and cross_out1_out2 ? circleYPosition : na, style=plot.style_cross, linewidth=15, color=color.aqua)
+
+//barcolor Plot for Price Crossing Moving Average #1
+
+barcolor(spc and cr_up ? color.yellow : na)
+
+barcolor(spc and cr_Down ? color.yellow : na)
+
+//barcolor Plot for Price Crossing Moving Average #2
+
+barcolor(spc2 and cr_up2 ? color.yellow : na)
+
+barcolor(spc2 and cr_Down2 ? color.yellow : na)
+
+
+
+// ══════════════════════════════════════════
+
+// EMA 50 Y EMA 105 (agregado de Yordany) — no reemplazan las MAs originales
+
+// ══════════════════════════════════════════
+
+ema50_yordany  = ta.ema(close, ema50_len)
+
+ema105_yordany = ta.ema(close, ema105_len)
+
+
+
+plot(ema50_yordany,  "EMA 50 (Yordany)",  color=ema50_col_i,  linewidth=2)
+
+plot(ema105_yordany, "EMA 105 (Yordany)", color=ema105_col_i, linewidth=2)
+
+
+
+// Sesgo general definido por la EMA 50 nueva
+
+sesgo_bull = close > ema50_yordany
+
+sesgo_bear = close < ema50_yordany
+
+
+
+// ══════════════════════════════════════════
+
+// EMA21 + VWAP Signal (unido tal cual el indicador original)
+
+// ══════════════════════════════════════════
+
+ema21     = ta.ema(close, ema21_len)
+
+vwapValue = ta.vwap(hlc3)
+
+
+
+// Reglas de tendencia: EMA21 > EMA50 > EMA105 para LONG y viceversa.
+// VWAP es OPCIONAL y por defecto NO bloquea ninguna senal.
+emaLongAligned = ema21 > ema50_yordany and ema50_yordany > ema105_yordany
+emaShortAligned = ema21 < ema50_yordany and ema50_yordany < ema105_yordany
+bullBias = close > ema21 and emaLongAligned and (not use_vwap_signal_filter or close > vwapValue)
+bearBias = close < ema21 and emaShortAligned and (not use_vwap_signal_filter or close < vwapValue)
+neutral = not bullBias and not bearBias
+
+// Solo se dispara al aparecer una NUEVA condicion de alineacion valida.
+// No repite puntos en cada vela mientras el estado sigue activo.
+bullSignal = show_vwap_signal and (not confirm_close or barstate.isconfirmed) and bullBias and not bullBias[1]
+bearSignal = show_vwap_signal and (not confirm_close or barstate.isconfirmed) and bearBias and not bearBias[1]
+
+// Color de EMA21: se basa solo en posicion del precio respecto a la EMA.
+// VWAP conserva su lectura visual independiente.
+color ema21Color = close > ema21 ? color.green : close < ema21 ? color.red : color.new(color.gray, 40)
+color vwapColor = close > vwapValue ? color.green : color.red
+
+plot(ema21, title="EMA 21 (Senal)", color=ema21Color, linewidth=2)
+plot(vwapValue, title="VWAP (visual)", color=vwapColor, linewidth=3)
+
+plotshape(bullSignal, title="Senal LONG EMA alineadas", style=shape.circle, location=location.belowbar, color=color.lime, size=size.tiny)
+plotshape(bearSignal, title="Senal SHORT EMA alineadas", style=shape.circle, location=location.abovebar, color=color.red, size=size.tiny)
+
+alertcondition(bullSignal, title="LONG EMA alineadas", message="LONG: Precio > EMA21 > EMA50 > EMA105. VWAP opcional.")
+alertcondition(bearSignal, title="SHORT EMA alineadas", message="SHORT: Precio < EMA21 < EMA50 < EMA105. VWAP opcional.")
+alertcondition(neutral and barstate.isconfirmed, title="Condicion neutral", message="Sin alineacion valida de EMA para las senales.")
+
+// ══════════════════════════════════════════
+
+// TABLA UNIFICADA (Yordany) — sesgo general + estado de todas las MAs/EMAs + señal EMA21/VWAP
+
+// ══════════════════════════════════════════
+
+if show_table and barstate.islast
+
+    var pos = position.top_right
+
+    if panel_pos == "Arriba Izquierda"
+
+        pos := position.top_left
+
+    else if panel_pos == "Abajo Derecha"
+
+        pos := position.bottom_right
+
+    else if panel_pos == "Abajo Izquierda"
+
+        pos := position.bottom_left
+
+    else
+
+        pos := position.top_right
+
+
+
+    sesgo_txt = sesgo_bull ? "ALCISTA" : "BAJISTA"
+
+    sesgo_col = sesgo_bull ? color.green : color.red
+
+
+
+    e_ma1_txt  = close > out1  ? "Encima" : "Debajo"
+
+    e_ma1_c    = close > out1  ? color.green : color.red
+
+    e_ma2_txt  = close > out2  ? "Encima" : "Debajo"
+
+    e_ma2_c    = close > out2  ? color.green : color.red
+
+    e50_txt    = close > ema50_yordany  ? "Encima" : "Debajo"
+
+    e50_c      = close > ema50_yordany  ? color.green : color.red
+
+    e105_txt   = close > ema105_yordany ? "Encima" : "Debajo"
+
+    e105_c     = close > ema105_yordany ? color.green : color.red
+
+    e21_txt    = close > ema21   ? "Encima" : "Debajo"
+
+    e21_c      = close > ema21   ? color.green : color.red
+
+    evwap_txt  = close > vwapValue ? "Encima" : "Debajo"
+
+    evwap_c    = close > vwapValue ? color.green : color.red
+
+
+
+    vwapSig_txt = bullBias ? "LONG BIAS" : bearBias ? "SHORT BIAS" : "NEUTRAL"
+
+    vwapSig_col = bullBias ? color.green : bearBias ? color.red : color.gray
+
+
+
+    var tbl = table.new(pos, 2, 9,
+
+         bgcolor=color.new(color.black, 15),
+
+         border_color=color.gray, border_width=1,
+
+         frame_color=color.gray,  frame_width=1)
+
+
+
+    table.cell(tbl, 0, 0, "SESGO (EMA50)",  text_color=color.white, bgcolor=color.new(color.gray,  50), text_size=size.small)
+
+    table.cell(tbl, 1, 0, sesgo_txt,         text_color=sesgo_col,   bgcolor=color.new(color.gray,  50), text_size=size.small)
+
+    table.cell(tbl, 0, 1, "vs MA 1",        text_color=color.white, bgcolor=color.new(color.black, 40), text_size=size.small)
+
+    table.cell(tbl, 1, 1, e_ma1_txt,         text_color=e_ma1_c,     bgcolor=color.new(color.black, 40), text_size=size.small)
+
+    table.cell(tbl, 0, 2, "vs MA 2",        text_color=color.white, bgcolor=color.new(color.black, 50), text_size=size.small)
+
+    table.cell(tbl, 1, 2, e_ma2_txt,         text_color=e_ma2_c,     bgcolor=color.new(color.black, 50), text_size=size.small)
+
+    table.cell(tbl, 0, 3, "vs EMA 50",      text_color=color.white, bgcolor=color.new(color.black, 40), text_size=size.small)
+
+    table.cell(tbl, 1, 3, e50_txt,           text_color=e50_c,       bgcolor=color.new(color.black, 40), text_size=size.small)
+
+    table.cell(tbl, 0, 4, "vs EMA 105",     text_color=color.white, bgcolor=color.new(color.black, 50), text_size=size.small)
+
+    table.cell(tbl, 1, 4, e105_txt,          text_color=e105_c,      bgcolor=color.new(color.black, 50), text_size=size.small)
+
+    table.cell(tbl, 0, 5, "vs EMA 21",      text_color=color.white, bgcolor=color.new(color.black, 40), text_size=size.small)
+
+    table.cell(tbl, 1, 5, e21_txt,           text_color=e21_c,       bgcolor=color.new(color.black, 40), text_size=size.small)
+
+    table.cell(tbl, 0, 6, "vs VWAP",        text_color=color.white, bgcolor=color.new(color.black, 50), text_size=size.small)
+
+    table.cell(tbl, 1, 6, evwap_txt,         text_color=evwap_c,     bgcolor=color.new(color.black, 50), text_size=size.small)
+
+    table.cell(tbl, 0, 7, "PRECIO",         text_color=color.white, bgcolor=color.new(color.black, 40), text_size=size.small)
+
+    table.cell(tbl, 1, 7, str.format("{0,number,#.00}", close), text_color=color.white, bgcolor=color.new(color.black, 40), text_size=size.small)
+
+    table.cell(tbl, 0, 8, "SENAL EMAS", text_color=color.white, bgcolor=color.new(color.navy, 30), text_size=size.small)
+
+    table.cell(tbl, 1, 8, vwapSig_txt,         text_color=vwapSig_col, bgcolor=color.new(color.navy, 30), text_size=size.small)

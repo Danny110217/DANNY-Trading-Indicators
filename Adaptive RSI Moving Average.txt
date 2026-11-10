@@ -1,0 +1,166 @@
+//@version=6
+indicator("Adaptive RSI Moving Average [Yordany] - Trend Color", shorttitle="Y RSI Trend", overlay=true)
+
+// ══════════════════════════════════════════════════════════════
+// RSI
+// ══════════════════════════════════════════════════════════════
+
+rsiPeriod = input.int(
+     10,
+     "Período RSI",
+     minval=1,
+     group="Índice de fuerza relativa")
+
+rsiSmoothOn = input.bool(
+     true,
+     "Alisado RSI",
+     inline="rsiSmooth",
+     group="Índice de fuerza relativa")
+
+rsiSmoothLen = input.int(
+     10,
+     "",
+     minval=1,
+     inline="rsiSmooth",
+     group="Índice de fuerza relativa")
+
+// ══════════════════════════════════════════════════════════════
+// VALORES
+// ══════════════════════════════════════════════════════════════
+
+valSmoothOn = input.bool(
+     true,
+     "Alisado Valores",
+     inline="valSmooth",
+     group="Valores")
+
+valSmoothLen = input.int(
+     10,
+     "",
+     minval=1,
+     inline="valSmooth",
+     group="Valores")
+
+scaleFactor = input.float(
+     0.5,
+     "Escala",
+     minval=0.0,
+     maxval=1.0,
+     step=0.05,
+     group="Valores")
+
+// ══════════════════════════════════════════════════════════════
+// COMUNES
+// ══════════════════════════════════════════════════════════════
+
+src = input.source(
+     close,
+     "Fuente",
+     group="Comunes")
+
+// ══════════════════════════════════════════════════════════════
+// TENDENCIA
+// ══════════════════════════════════════════════════════════════
+
+slopeBars = input.int(
+     1,
+     "Velas para confirmar dirección",
+     minval=1,
+     maxval=20,
+     group="Tendencia")
+
+// ══════════════════════════════════════════════════════════════
+// COLORES
+// ══════════════════════════════════════════════════════════════
+
+bullColor = input.color(
+     color.lime,
+     "Alcista",
+     group="Colores")
+
+bearColor = input.color(
+     color.red,
+     "Bajista",
+     group="Colores")
+
+neutralColor = input.color(
+     color.gray,
+     "Neutral",
+     group="Colores")
+
+lineWidth = input.int(
+     2,
+     "Ancho de línea",
+     minval=1,
+     maxval=5,
+     group="Colores")
+
+// ══════════════════════════════════════════════════════════════
+// CÁLCULO ORIGINAL
+// ══════════════════════════════════════════════════════════════
+
+rawRsi = ta.rsi(src, rsiPeriod)
+
+rsiVal = rsiSmoothOn ?
+     ta.sma(rawRsi, rsiSmoothLen) :
+     rawRsi
+
+rsiDeviation = math.abs(rsiVal - 50) / 50
+
+baseAlpha = 2.0 / (valSmoothLen + 1)
+
+adaptiveAlpha =
+     baseAlpha *
+     (rsiDeviation * scaleFactor + (1 - scaleFactor))
+
+var float ama = na
+
+ama :=
+     na(ama[1]) ?
+     src :
+     ama[1] + adaptiveAlpha * (src - ama[1])
+
+amaFinal =
+     valSmoothOn ?
+     ta.ema(ama, valSmoothLen) :
+     ama
+
+// ══════════════════════════════════════════════════════════════
+// DIRECCIÓN
+// ══════════════════════════════════════════════════════════════
+
+// Precio arriba / abajo
+priceAbove = close > amaFinal
+priceBelow = close < amaFinal
+
+// Dirección real de la línea
+lineRising = amaFinal > amaFinal[slopeBars]
+lineFalling = amaFinal < amaFinal[slopeBars]
+
+// Alcista:
+// Precio encima + línea subiendo
+bullish =
+     priceAbove and
+     lineRising
+
+// Bajista:
+// Precio debajo + línea bajando
+bearish =
+     priceBelow and
+     lineFalling
+
+// Cualquier desacuerdo = neutral
+trendColor =
+     bullish ? bullColor :
+     bearish ? bearColor :
+     neutralColor
+
+// ══════════════════════════════════════════════════════════════
+// PLOT
+// ══════════════════════════════════════════════════════════════
+
+plot(
+     amaFinal,
+     title="Adaptive RSI MA",
+     color=trendColor,
+     linewidth=lineWidth)

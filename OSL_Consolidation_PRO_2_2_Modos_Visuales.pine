@@ -1,0 +1,451 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0
+// Original consolidation concept © Orlyscharts
+// Extended implementation: OSL Consolidation PRO 2.2 - Modos visuales + VWAP dinamico
+//@version=6
+indicator("OSL Consolidation PRO 2.2 - Intraday MTF VWAP", "OSL PRO 2.2", overlay = true, max_boxes_count = 150, max_lines_count = 300, max_labels_count = 200)
+
+// ─────────────────────────────────────────────────────────────
+// 00 · MODOS VISUALES
+// En modo Limpio solo aparecen los rangos y las senales confirmadas,
+// junto con VWAP y EMAs si el usuario activa sus opciones.
+// Modo Completo respeta cada opcion individual de visualizacion.
+// ─────────────────────────────────────────────────────────────
+gView = "00 | Visualizacion"
+viewMode = input.string("Limpio", "Modo visual", options = ["Limpio", "Completo"], group = gView)
+cleanShowSignals = input.bool(true, "Limpio: mostrar LONG/SHORT confirmados", group = gView)
+cleanShowMidline = input.bool(true, "Limpio: mostrar centro del rango", group = gView)
+cleanShowHistory = input.bool(false, "Limpio: conservar historial de rangos", group = gView)
+cleanShowTradeLines = input.bool(false, "Limpio: mostrar entrada, SL y TP", group = gView)
+cleanShowSweeps = input.bool(false, "Limpio: mostrar barridas", group = gView)
+cleanShowFailures = input.bool(false, "Limpio: mostrar rupturas fallidas", group = gView)
+
+// ─────────────────────────────────────────────────────────────
+// 01 · DETECTION
+// ─────────────────────────────────────────────────────────────
+gDet = "01 | Consolidaciones"
+rangeBars      = input.int(5, "Velas minimas (temporalidad actual)", minval = 3, maxval = 20, group = gDet)
+atrLength      = input.int(14, "ATR periodos", minval = 1, group = gDet)
+maxWidthATR    = input.float(1.50, "Ancho maximo / ATR", minval = 0.10, step = 0.05, group = gDet)
+nestedFactor   = input.float(0.90, "Compresion interna (factor)", minval = 0.50, maxval = 0.99, step = 0.01, group = gDet)
+maxActiveBars  = input.int(60, "Duracion maxima (velas, 0 = ilimitada)", minval = 0, maxval = 500, group = gDet)
+showMidline    = input.bool(true, "Mostrar linea central", group = gDet)
+
+// ─────────────────────────────────────────────────────────────
+// 02 · BREAKOUTS / RETESTS / SWEEPS
+// ─────────────────────────────────────────────────────────────
+gBreak = "02 | Rupturas y barridas"
+breakBufferATR = input.float(0.05, "Buffer ruptura / ATR", minval = 0, step = 0.01, group = gBreak)
+entryMode      = input.string("Ruptura", "Tipo de entrada", options = ["Ruptura", "Retest"], group = gBreak)
+retestBars     = input.int(8, "Max velas para retest", minval = 1, maxval = 50, group = gBreak)
+retestTolATR   = input.float(0.15, "Tolerancia retest / ATR", minval = 0, step = 0.05, group = gBreak)
+showSweeps     = input.bool(true, "Marcar barridas de liquidez", group = gBreak)
+showFailures   = input.bool(true, "Marcar ruptura fallida (cierre de vuelta)", group = gBreak)
+failBars       = input.int(5, "Ventana de fallo (velas)", minval = 1, maxval = 30, group = gBreak)
+allowLong      = input.bool(true, "Permitir LONG", group = gBreak)
+allowShort     = input.bool(true, "Permitir SHORT", group = gBreak)
+
+// ─────────────────────────────────────────────────────────────
+// 03 · VOLUME
+// ─────────────────────────────────────────────────────────────
+gVol = "03 | Volumen"
+useVolFilter = input.bool(false, "Exigir volumen de confirmacion", group = gVol)
+volLength    = input.int(20, "Promedio volumen (SMA)", minval = 1, group = gVol)
+volMultiple  = input.float(1.50, "Volumen minimo x promedio", minval = 0.10, step = 0.10, group = gVol)
+
+// ─────────────────────────────────────────────────────────────
+// 04 · ANCHORED VWAP (CALCULADO EN LAS VELAS DEL GRAFICO)
+// ─────────────────────────────────────────────────────────────
+gVW = "04 | VWAP anclado"
+showVWAP      = input.bool(true, "Mostrar VWAP", group = gVW)
+useVWAPFilter = input.bool(false, "Exigir direccion VWAP", group = gVW)
+vwapPeriod    = input.string("1H", "Anclaje VWAP", options = ["1H", "2H", "3H", "4H", "6H", "8H", "12H", "Diario", "Semanal"], group = gVW)
+vwapSource    = input.source(hlc3, "Fuente VWAP", group = gVW)
+vwapColor     = input.color(color.orange, "Color VWAP fijo", group = gVW)
+vwapDynamic   = input.bool(true, "Color dinamico segun pendiente", group = gVW)
+vwapBullColor = input.color(#089981, "VWAP alcista", group = gVW)
+vwapBearColor = input.color(#F23645, "VWAP bajista", group = gVW)
+vwapFlatColor = input.color(color.gray, "VWAP neutro / nuevo anclaje", group = gVW)
+vwapSlopeBars = input.int(1, "Velas para medir pendiente", minval = 1, maxval = 20, group = gVW)
+vwapFlatTicks = input.float(0.0, "Umbral neutral en ticks", minval = 0.0, step = 0.25, group = gVW)
+vwapWidth     = input.int(2, "Grosor VWAP", minval = 1, maxval = 4, group = gVW)
+
+// ─────────────────────────────────────────────────────────────
+// 05 · MOVING AVERAGES
+// ─────────────────────────────────────────────────────────────
+gEMA = "05 | EMA y tendencia"
+showFastEMA   = input.bool(false, "Mostrar EMA rapida", group = gEMA)
+fastLength    = input.int(10, "Periodo EMA rapida", minval = 1, group = gEMA)
+fastColor     = input.color(color.aqua, "Color EMA rapida", group = gEMA)
+showSlowEMA   = input.bool(false, "Mostrar EMA lenta", group = gEMA)
+slowLength    = input.int(50, "Periodo EMA lenta", minval = 1, group = gEMA)
+slowColor     = input.color(color.yellow, "Color EMA lenta", group = gEMA)
+useEMAFilter  = input.bool(false, "Exigir alineacion de EMAs y precio", group = gEMA)
+
+// ─────────────────────────────────────────────────────────────
+// 06 · RISK / TARGETS
+// ─────────────────────────────────────────────────────────────
+gRisk = "06 | Riesgo y objetivos"
+showTradeLines   = input.bool(true, "Dibujar entrada / SL / TP", group = gRisk)
+stopMode         = input.string("Lado opuesto del rango", "Calculo de SL", options = ["Lado opuesto del rango", "ATR"], group = gRisk)
+stopATR          = input.float(1.0, "SL distancia ATR (modo ATR)", minval = 0.10, step = 0.10, group = gRisk)
+stopBufferATR    = input.float(0.05, "SL buffer adicional / ATR", minval = 0, step = 0.05, group = gRisk)
+riskReward       = input.float(3.0, "Objetivo riesgo/beneficio", minval = 0.10, step = 0.25, group = gRisk)
+showMeasured     = input.bool(false, "Mostrar objetivo por amplitud del rango", group = gRisk)
+measuredMultiple = input.float(1.0, "Multiplicador amplitud", minval = 0.10, step = 0.25, group = gRisk)
+tradeLineBars    = input.int(15, "Longitud lineas (velas)", minval = 1, maxval = 100, group = gRisk)
+maxTradeSets     = input.int(10, "Operaciones dibujadas (max 30)", minval = 1, maxval = 30, group = gRisk)
+
+// ─────────────────────────────────────────────────────────────
+// 07 · APPEARANCE / HISTORY
+// ─────────────────────────────────────────────────────────────
+gStyle = "07 | Estilo e historial"
+activeColor   = input.color(#A855F7, "Rango activo", group = gStyle)
+upColor       = input.color(#089981, "Ruptura alcista", group = gStyle)
+downColor     = input.color(#F23645, "Ruptura bajista", group = gStyle)
+expiredColor  = input.color(color.gray, "Rango vencido", group = gStyle)
+fillOpacity   = input.int(84, "Transparencia rectangulos", minval = 0, maxval = 100, group = gStyle)
+keepHistory   = input.bool(true, "Conservar historial de rangos", group = gStyle)
+latestDayOnly = input.bool(true, "Mostrar solo el dia de trading actual", group = gStyle)
+maxSaved      = input.int(25, "Max rangos guardados", minval = 1, maxval = 100, group = gStyle)
+showSignals   = input.bool(true, "Mostrar senales confirmadas", group = gStyle)
+showWeak      = input.bool(false, "Mostrar rupturas sin filtros", group = gStyle)
+
+// Opciones de dibujo efectivas: no alteran calculos ni filtros.
+// La configuracion de cada modo queda disponible sin modificar el codigo.
+bool isClean = viewMode == "Limpio"
+bool drawMidline = isClean ? cleanShowMidline : showMidline
+bool drawHistory = isClean ? cleanShowHistory : keepHistory
+bool drawSignals = isClean ? cleanShowSignals : showSignals
+bool drawSweeps = isClean ? cleanShowSweeps : showSweeps
+bool drawFailures = isClean ? cleanShowFailures : showFailures
+bool drawTradeLines = isClean ? cleanShowTradeLines : showTradeLines
+bool drawWeak = not isClean and showWeak
+
+// ─────────────────────────────────────────────────────────────
+// TIMEFRAME / DAILY CONTROL
+// ─────────────────────────────────────────────────────────────
+isIntraday = timeframe.isintraday
+newDay = ta.change(time_tradingday) != 0
+var int dayStartBar = na
+if na(dayStartBar)
+    dayStartBar := bar_index
+
+// El anclaje selecciona la hora/periodo del exchange del simbolo.
+string anchorTF = switch vwapPeriod
+    "1H"     => "60"
+    "2H"     => "120"
+    "3H"     => "180"
+    "4H"     => "240"
+    "6H"     => "360"
+    "8H"     => "480"
+    "12H"    => "720"
+    "Diario" => "1D"
+    => "1W"
+
+anchorReset = timeframe.change(anchorTF)
+var float pvSum = na
+var float volumeSum = na
+if anchorReset or na(pvSum)
+    pvSum := 0.0
+    volumeSum := 0.0
+if not na(volume) and volume > 0 and not na(vwapSource)
+    pvSum += vwapSource * volume
+    volumeSum += volume
+float anchoredVWAP = volumeSum > 0 ? pvSum / volumeSum : na
+// La pendiente se compara solamente dentro del mismo periodo de anclaje.
+// Evita interpretar un salto por reinicio de VWAP como cambio de tendencia.
+var int barsInAnchor = 0
+barsInAnchor := anchorReset ? 1 : barsInAnchor + 1
+bool vwapHasSlope = barsInAnchor > vwapSlopeBars and not na(anchoredVWAP[vwapSlopeBars]) and not na(anchoredVWAP)
+float vwapSlope = vwapHasSlope ? anchoredVWAP - anchoredVWAP[vwapSlopeBars] : na
+float flatThreshold = vwapFlatTicks * syminfo.mintick
+color slopeColor = not vwapHasSlope ? vwapFlatColor : vwapSlope > flatThreshold ? vwapBullColor : vwapSlope < -flatThreshold ? vwapBearColor : vwapFlatColor
+color selectedVWAPColor = vwapDynamic ? slopeColor : vwapColor
+
+emaFast = ta.ema(close, fastLength)
+emaSlow = ta.ema(close, slowLength)
+atr = ta.atr(atrLength)
+volAvg = ta.sma(volume, volLength)
+volOK = not useVolFilter or (not na(volAvg) and volAvg > 0 and volume >= volAvg * volMultiple)
+longFilters = volOK and (not useVWAPFilter or (not na(anchoredVWAP) and close > anchoredVWAP)) and (not useEMAFilter or (close > emaFast and emaFast > emaSlow))
+shortFilters = volOK and (not useVWAPFilter or (not na(anchoredVWAP) and close < anchoredVWAP)) and (not useEMAFilter or (close < emaFast and emaFast < emaSlow))
+
+plot(isIntraday and showVWAP ? anchoredVWAP : na, "VWAP anclado", color = selectedVWAPColor, linewidth = vwapWidth)
+plot(isIntraday and showFastEMA ? emaFast : na, "EMA rapida", color = fastColor)
+plot(isIntraday and showSlowEMA ? emaSlow : na, "EMA lenta", color = slowColor)
+
+candidateTop    = ta.highest(high, rangeBars)
+candidateBottom = ta.lowest(low, rangeBars)
+candidateWidth  = candidateTop - candidateBottom
+candidateStart  = bar_index - rangeBars + 1
+
+var box activeBox = na
+var line activeMid = na
+var box[] rangeBoxes = array.new_box()
+var line[] midpointLines = array.new_line()
+var line[] tradeLines = array.new_line()
+var bool rangeActive = false
+var float rangeTop = na
+var float rangeBottom = na
+var int rangeStart = na
+var int rangeCreated = na
+var int lastBreakBar = na
+
+// Retest pendiente: direccion 1/-1; se rastrea aparte del rango activo.
+var int pendingDirection = 0
+var int pendingBar = na
+var float pendingTop = na
+var float pendingBottom = na
+var float pendingATR = na
+
+// Ruptura reciente para detectar un cierre de regreso al rango.
+var int brokenDirection = 0
+var int brokenBar = na
+var float brokenTop = na
+var float brokenBottom = na
+
+// Eventos (se reinician en cada evaluacion).
+bool sigLong = false
+bool sigShort = false
+bool weakLong = false
+bool weakShort = false
+bool sweepUp = false
+bool sweepDown = false
+bool failedUp = false
+bool failedDown = false
+bool newConsolidation = false
+bool breakUpEvent = false
+bool breakDownEvent = false
+float signalTop = na
+float signalBottom = na
+float signalATR = na
+
+// Limpiar dibujos y estado al inicio de un nuevo dia de trading.
+if isIntraday and newDay
+    // Cerrar visualmente cualquier rango previo cuando conservamos dias anteriores.
+    if rangeActive and not na(activeBox) and not latestDayOnly
+        box.set_border_color(activeBox, expiredColor)
+        box.set_bgcolor(activeBox, color.new(expiredColor, fillOpacity))
+        if not na(activeMid)
+            line.set_color(activeMid, expiredColor)
+    dayStartBar := bar_index
+    pendingDirection := 0
+    brokenDirection := 0
+    rangeActive := false
+    activeBox := na
+    activeMid := na
+    rangeTop := na
+    rangeBottom := na
+    rangeStart := na
+    rangeCreated := na
+    lastBreakBar := bar_index - 1
+    if latestDayOnly
+        while array.size(rangeBoxes) > 0
+            box.delete(array.pop(rangeBoxes))
+        while array.size(midpointLines) > 0
+            line.delete(array.pop(midpointLines))
+        while array.size(tradeLines) > 0
+            line.delete(array.pop(tradeLines))
+
+// Mantener borde derecho actualizado mientras el rango este activo.
+if isIntraday and rangeActive and not na(activeBox)
+    box.set_right(activeBox, bar_index)
+    if not na(activeMid)
+        line.set_x2(activeMid, bar_index)
+
+if isIntraday and barstate.isconfirmed and not na(atr)
+    bool brokeNow = false
+    float buffer = atr * breakBufferATR
+
+    // 1) Monitorear fallo de una ruptura confirmada anterior.
+    if brokenDirection != 0
+        if bar_index > brokenBar and bar_index - brokenBar <= failBars
+            if brokenDirection == 1 and close < brokenTop and close >= brokenBottom
+                failedUp := true
+                brokenDirection := 0
+            else if brokenDirection == -1 and close > brokenBottom and close <= brokenTop
+                failedDown := true
+                brokenDirection := 0
+        if brokenDirection != 0 and bar_index - brokenBar > failBars
+            brokenDirection := 0
+
+    // 2) Retest: solo despues de una vela de ruptura, sin esperar indefinidamente.
+    if pendingDirection != 0 and bar_index > pendingBar
+        bool withinWindow = bar_index - pendingBar <= retestBars
+        float tol = atr * retestTolATR
+        if withinWindow
+            bool longRetest = pendingDirection == 1 and low <= pendingTop + tol and close > pendingTop and close >= pendingBottom
+            bool shortRetest = pendingDirection == -1 and high >= pendingBottom - tol and close < pendingBottom and close <= pendingTop
+            if longRetest or shortRetest
+                bool accepted = longRetest ? longFilters : shortFilters
+                if accepted and (longRetest ? allowLong : allowShort)
+                    sigLong := longRetest
+                    sigShort := shortRetest
+                    signalTop := pendingTop
+                    signalBottom := pendingBottom
+                    signalATR := atr
+                    pendingDirection := 0
+            // Invalida cuando cierra al otro lado del rango.
+            if pendingDirection == 1 and close < pendingBottom
+                pendingDirection := 0
+            if pendingDirection == -1 and close > pendingTop
+                pendingDirection := 0
+        else
+            pendingDirection := 0
+
+    // 3) Barrida: rompe con mecha y CIERRA dentro de la zona.
+    if rangeActive
+        sweepUp := high > rangeTop + buffer and close <= rangeTop and close >= rangeBottom
+        sweepDown := low < rangeBottom - buffer and close >= rangeBottom and close <= rangeTop
+
+        bool upBreak = close > rangeTop + buffer
+        bool downBreak = close < rangeBottom - buffer
+        if upBreak or downBreak
+            brokeNow := true
+            breakUpEvent := upBreak
+            breakDownEvent := downBreak
+            color breakColor = upBreak ? upColor : downColor
+            box.set_border_color(activeBox, breakColor)
+            box.set_bgcolor(activeBox, color.new(breakColor, fillOpacity))
+            if not na(activeMid)
+                line.set_color(activeMid, breakColor)
+
+            bool validDirection = upBreak ? allowLong : allowShort
+            bool passedFilters = upBreak ? longFilters : shortFilters
+            if entryMode == "Ruptura" and validDirection
+                if passedFilters
+                    sigLong := upBreak
+                    sigShort := downBreak
+                    signalTop := rangeTop
+                    signalBottom := rangeBottom
+                    signalATR := atr
+                else
+                    weakLong := upBreak
+                    weakShort := downBreak
+            if entryMode == "Retest" and validDirection
+                pendingDirection := upBreak ? 1 : -1
+                pendingBar := bar_index
+                pendingTop := rangeTop
+                pendingBottom := rangeBottom
+                pendingATR := atr
+
+            brokenDirection := upBreak ? 1 : -1
+            brokenBar := bar_index
+            brokenTop := rangeTop
+            brokenBottom := rangeBottom
+            lastBreakBar := bar_index
+            rangeActive := false
+            activeBox := na
+            activeMid := na
+            rangeTop := na
+            rangeBottom := na
+            rangeStart := na
+            rangeCreated := na
+
+    // 4) Expiracion de zonas que duran demasiado.
+    if rangeActive and maxActiveBars > 0 and bar_index - rangeCreated >= maxActiveBars
+        box.set_border_color(activeBox, expiredColor)
+        box.set_bgcolor(activeBox, color.new(expiredColor, fillOpacity))
+        if not na(activeMid)
+            line.set_color(activeMid, expiredColor)
+        rangeActive := false
+        activeBox := na
+        activeMid := na
+        rangeTop := na
+        rangeBottom := na
+        rangeStart := na
+        rangeCreated := na
+
+    // 5) Detectar nueva zona o estrechar rango activo.
+    bool enoughToday = bar_index - dayStartBar + 1 >= rangeBars
+    bool afterBreak = na(lastBreakBar) or candidateStart > lastBreakBar
+    bool quiet = enoughToday and afterBreak and candidateWidth <= atr * maxWidthATR
+    if quiet and not brokeNow
+        bool nested = rangeActive and candidateTop <= rangeTop and candidateBottom >= rangeBottom and candidateStart > rangeStart and candidateWidth <= (rangeTop - rangeBottom) * nestedFactor
+        if nested
+            // Borrar SOLO la caja activa anterior; conservar historial cerrado.
+            if not na(activeBox)
+                box.delete(activeBox)
+            if not na(activeMid)
+                line.delete(activeMid)
+            if array.size(rangeBoxes) > 0
+                array.pop(rangeBoxes)
+            if array.size(midpointLines) > 0
+                array.pop(midpointLines)
+            rangeActive := false
+            activeBox := na
+            activeMid := na
+
+        if not rangeActive
+            // Modo "sin historial": conservar solamente la zona mas reciente.
+            if not drawHistory
+                while array.size(rangeBoxes) > 0
+                    box.delete(array.pop(rangeBoxes))
+                while array.size(midpointLines) > 0
+                    line.delete(array.pop(midpointLines))
+
+            rangeTop := candidateTop
+            rangeBottom := candidateBottom
+            rangeStart := candidateStart
+            rangeCreated := bar_index
+            float middle = math.avg(rangeTop, rangeBottom)
+            activeBox := box.new(left = rangeStart, top = rangeTop, right = bar_index, bottom = rangeBottom, border_color = activeColor, border_width = 1, bgcolor = color.new(activeColor, fillOpacity))
+            array.push(rangeBoxes, activeBox)
+            // Guardamos NA como placeholder para sincronizar el historial.
+            if drawMidline
+                activeMid := line.new(x1 = rangeStart, y1 = middle, x2 = bar_index, y2 = middle, color = activeColor, style = line.style_dotted)
+            else
+                activeMid := na
+            array.push(midpointLines, activeMid)
+            rangeActive := true
+            newConsolidation := true
+
+            while array.size(rangeBoxes) > maxSaved
+                box.delete(array.shift(rangeBoxes))
+                line oldMid = array.shift(midpointLines)
+                if not na(oldMid)
+                    line.delete(oldMid)
+
+    // 6) Entrada, SL, TP y objetivo de amplitud: solo al confirmarse la senal.
+    if drawTradeLines and (sigLong or sigShort)
+        bool isLong = sigLong
+        float entry = close
+        float riskBuffer = signalATR * stopBufferATR
+        float sl = stopMode == "ATR" ? (isLong ? entry - signalATR * stopATR : entry + signalATR * stopATR) : (isLong ? signalBottom - riskBuffer : signalTop + riskBuffer)
+        float risk = math.abs(entry - sl)
+        bool stopValid = isLong ? sl < entry : sl > entry
+        if stopValid and risk >= syminfo.mintick
+            float tp = isLong ? entry + risk * riskReward : entry - risk * riskReward
+            line entryLine = line.new(bar_index, entry, bar_index + tradeLineBars, entry, color = color.gray, width = 2)
+            line stopLine = line.new(bar_index, sl, bar_index + tradeLineBars, sl, color = color.red, width = 2)
+            line tpLine = line.new(bar_index, tp, bar_index + tradeLineBars, tp, color = color.lime, width = 2)
+            array.push(tradeLines, entryLine)
+            array.push(tradeLines, stopLine)
+            array.push(tradeLines, tpLine)
+            if showMeasured
+                float target = isLong ? signalTop + (signalTop - signalBottom) * measuredMultiple : signalBottom - (signalTop - signalBottom) * measuredMultiple
+                line targetLine = line.new(bar_index, target, bar_index + tradeLineBars, target, color = color.blue, style = line.style_dashed)
+                array.push(tradeLines, targetLine)
+            int linesPerTrade = showMeasured ? 4 : 3
+            while array.size(tradeLines) > maxTradeSets * linesPerTrade
+                line.delete(array.shift(tradeLines))
+
+// Etiquetas simples, sin ensuciar las cajas.
+plotshape(isIntraday and drawSignals and sigLong, title = "LONG confirmado", style = shape.labelup, location = location.belowbar, color = upColor, text = "LONG", textcolor = color.white, size = size.tiny)
+plotshape(isIntraday and drawSignals and sigShort, title = "SHORT confirmado", style = shape.labeldown, location = location.abovebar, color = downColor, text = "SHORT", textcolor = color.white, size = size.tiny)
+plotshape(isIntraday and drawWeak and weakLong, title = "Ruptura long sin filtros", style = shape.triangleup, location = location.belowbar, color = color.new(upColor, 35), size = size.tiny)
+plotshape(isIntraday and drawWeak and weakShort, title = "Ruptura short sin filtros", style = shape.triangledown, location = location.abovebar, color = color.new(downColor, 35), size = size.tiny)
+plotshape(isIntraday and drawSweeps and sweepUp, title = "Barrida sobre techo", style = shape.xcross, location = location.abovebar, color = color.orange, size = size.tiny)
+plotshape(isIntraday and drawSweeps and sweepDown, title = "Barrida bajo suelo", style = shape.xcross, location = location.belowbar, color = color.orange, size = size.tiny)
+plotshape(isIntraday and drawFailures and failedUp, title = "Ruptura alcista fallida", style = shape.circle, location = location.abovebar, color = color.red, size = size.tiny)
+plotshape(isIntraday and drawFailures and failedDown, title = "Ruptura bajista fallida", style = shape.circle, location = location.belowbar, color = color.lime, size = size.tiny)
+
+alertcondition(isIntraday and newConsolidation, "Nueva consolidacion", "OSL PRO: Nueva consolidacion en {{ticker}} ({{interval}})")
+alertcondition(isIntraday and breakUpEvent, "Ruptura alcista de rango", "OSL PRO: Ruptura alcista en {{ticker}} ({{interval}})")
+alertcondition(isIntraday and breakDownEvent, "Ruptura bajista de rango", "OSL PRO: Ruptura bajista en {{ticker}} ({{interval}})")
+alertcondition(isIntraday and sigLong, "LONG confirmado", "OSL PRO: LONG confirmado en {{ticker}} ({{interval}})")
+alertcondition(isIntraday and sigShort, "SHORT confirmado", "OSL PRO: SHORT confirmado en {{ticker}} ({{interval}})")
+alertcondition(isIntraday and sweepUp, "Barrida alcista", "OSL PRO: Barrida sobre el techo en {{ticker}} ({{interval}})")
+alertcondition(isIntraday and sweepDown, "Barrida bajista", "OSL PRO: Barrida bajo el suelo en {{ticker}} ({{interval}})")
+alertcondition(isIntraday and failedUp, "Ruptura alcista fallida", "OSL PRO: Ruptura alcista fallida en {{ticker}} ({{interval}})")
+alertcondition(isIntraday and failedDown, "Ruptura bajista fallida", "OSL PRO: Ruptura bajista fallida en {{ticker}} ({{interval}})")
